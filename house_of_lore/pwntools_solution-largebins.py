@@ -117,4 +117,12 @@ edit(overlap, p64(0)*4 + b"Much win!")
 
 # =============================================================================
 
+# Summary
+# Constraints:
+#   Accurate size field for fake chunk
+#   fd and bk ptrs passing the safe unlinking checks
+#   nextsize ptrs (skiplist) that could either do the same or were null
+# Advantage:
+#   No heap leak necessary
+#
 io.interactive()
